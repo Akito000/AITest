@@ -1,0 +1,179 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+/// <summary>
+/// グリッド上の経路探索を行う補助クラス
+/// 「目的地へ向かう次の1手」や「脅威から逃げる方向」を返す
+/// </summary>
+public static class GridPathfinder
+{
+    // 探索に使う4方向
+    // この順番で調べるので、同じ距離ならこの順番が優先される
+    private static readonly MoveDirection[] AllDirections =
+    {
+        MoveDirection.UP,
+        MoveDirection.DOWN,
+        MoveDirection.LEFT,
+        MoveDirection.RIGHT,
+    };
+
+    /// <summary>
+    /// from から to へ向かうための「次の1手」を返す
+    /// 幅優先探索(BFS)を使って最短経路を探す
+    /// forbidden には「今は進みたくない方向」を渡せる
+    /// </summary>
+    public static MoveDirection FindNextDirection(
+        Vector2Int from,
+        Vector2Int to,
+        Stage stage,
+        MoveDirection forbidden = MoveDirection.NONE)
+    {
+        // すでに目的地にいるなら移動しない
+        if (from == to) return MoveDirection.NONE;
+
+        // 幅優先探索で使うキュー
+        // cell     : 今見ているマス
+        // firstDir : スタート地点からここに来るまでの最初の1手
+        var queue = new Queue<(Vector2Int cell, MoveDirection firstDir)>();
+
+        // すでに調べたマスを記録する
+        // 同じマスを何度も探索しないために使う
+        var visited = new HashSet<Vector2Int> { from };
+
+        // まずスタート地点の隣接マスを調べる
+        foreach (var dir in AllDirections)
+        {
+            // 禁止方向ならスキップ
+            if (dir == forbidden) continue;
+
+            // その方向に進めないならスキップ
+            if (!stage.CanMoveTo(from, dir)) continue;
+
+            // 隣のマスを取得
+            var next = stage.GetAdjacentCell(from, dir);
+
+            // まだ訪問していないマスなら探索対象にする
+            if (visited.Add(next))
+            {
+                // いきなり目的地だったら、その方向が答え
+                if (next == to) return dir;
+
+                // スタート地点の隣なので、最初の1手はそのまま dir
+                queue.Enqueue((next, dir));
+            }
+        }
+
+        // キューが空になるまで幅優先探索を続ける
+        while (queue.Count > 0)
+        {
+            // 先に入れたものから取り出す
+            // これにより「近い順」に探索できる
+            var (cell, firstDir) = queue.Dequeue();
+
+            // 今のマスからさらに4方向へ広げる
+            foreach (var dir in AllDirections)
+            {
+                // 進めない方向は無視
+                if (!stage.CanMoveTo(cell, dir)) continue;
+
+                // 隣のマスを取得
+                var next = stage.GetAdjacentCell(cell, dir);
+
+                // 未訪問なら探索対象にする
+                if (visited.Add(next))
+                {
+                    // 目的地に着いたら、
+                    // ここまで来るための「最初の1手」を返す
+                    if (next == to) return firstDir;
+
+                    // firstDir は変えずにそのまま引き継ぐ
+                    // これで「最終的にどの方向へ最初に動けばよいか」が分かる
+                    queue.Enqueue((next, firstDir));
+                }
+            }
+        }
+
+        // パスが見つからない場合は、とりあえず進める方向を返す
+        return FindAnyValidDirection(from, stage, forbidden);
+    }
+
+    /// <summary>
+    /// threat から最も遠ざかる方向を返す
+    /// いじけ状態や逃走状態向け
+    /// </summary>
+    public static MoveDirection FindFleeDirection(
+        Vector2Int from,
+        Vector2Int threat,
+        Stage stage,
+        MoveDirection forbidden = MoveDirection.NONE)
+    {
+        MoveDirection best = MoveDirection.NONE;
+        float maxDist = -1f;
+
+        // 4方向のうち、脅威から最も距離が離れる方向を探す
+        foreach (var dir in AllDirections)
+        {
+            // 禁止方向は無視
+            if (dir == forbidden) continue;
+
+            // 進めない方向は無視
+            if (!stage.CanMoveTo(from, dir)) continue;
+
+            // その方向へ1歩進んだ位置と脅威との距離を計算
+            // sqrMagnitude は平方距離なので sqrt を使わず軽い
+            float dist = (stage.GetAdjacentCell(from, dir) - threat).sqrMagnitude;
+
+            // より遠ざかれる方向なら更新
+            if (dist > maxDist)
+            {
+                maxDist = dist;
+                best = dir;
+            }
+        }
+
+        // 見つかったらその方向、なければフォールバック
+        return best != MoveDirection.NONE
+            ? best
+            : FindAnyValidDirection(from, stage, forbidden);
+    }
+
+    /// <summary>
+    /// とりあえず進める方向を返す
+    /// 経路が見つからないときのフォールバック用
+    /// </summary>
+    public static MoveDirection FindAnyValidDirection(
+        Vector2Int from,
+        Stage stage,
+        MoveDirection forbidden = MoveDirection.NONE)
+    {
+        // まずは禁止方向以外で進める方向を探す
+        foreach (var dir in AllDirections)
+        {
+            if (dir != forbidden && stage.CanMoveTo(from, dir))
+                return dir;
+        }
+
+        // どうしても無いときだけ禁止方向も含めて探す
+        foreach (var dir in AllDirections)
+        {
+            if (stage.CanMoveTo(from, dir))
+                return dir;
+        }
+
+        // どこにも進めないなら NONE
+        return MoveDirection.NONE;
+    }
+
+    /// <summary>
+    /// 渡された方向の逆方向を返す
+    /// 逆走禁止ルールなどで使う
+    /// </summary>
+    public static MoveDirection Opposite(MoveDirection dir) => dir switch
+    {
+        MoveDirection.UP    => MoveDirection.DOWN,
+        MoveDirection.DOWN  => MoveDirection.UP,
+        MoveDirection.LEFT  => MoveDirection.RIGHT,
+        MoveDirection.RIGHT => MoveDirection.LEFT,
+        _                   => MoveDirection.NONE,
+    };
+}
